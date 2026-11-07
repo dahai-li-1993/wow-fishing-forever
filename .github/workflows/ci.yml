@@ -19,7 +19,7 @@ jobs:
         os: [ubuntu-22.04, windows-latest, macos-latest]
         python: ["3.12", "3.13"]
     env:
-      WOWFISH_HOME: ${{ github.workspace }}/.wowfish-home
+      CEDARGROVE_HOME: ${{ github.workspace }}/.cedargrove-home
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,32 +42,32 @@ jobs:
         run: uv run pytest -v
 
       - name: Build executable
-        run: uv run pyinstaller --clean --noconfirm packaging/wowfish.spec
+        run: uv run pyinstaller --clean --noconfirm packaging/cedargrove.spec
 
       - name: Smoke executable (POSIX)
         if: runner.os != 'Windows'
         run: |
-          ./dist/wowfish --version
-          ./dist/wowfish doctor
-          ./dist/wowfish listen --list
-          ./dist/wowfish-gui --version
+          ./dist/cedargrove --version
+          ./dist/cedargrove doctor
+          ./dist/cedargrove listen --list
+          ./dist/cedargrove-gui --version
 
       - name: Smoke GUI window (Linux)
         if: runner.os == 'Linux'
         # `--version` never loads Tk. Open the real window on a virtual display: it must still be
         # running when timeout stops it (exit 124); a missing module exits sooner with 1.
-        run: timeout 15 xvfb-run -a ./dist/wowfish-gui || test $? -eq 124
+        run: timeout 15 xvfb-run -a ./dist/cedargrove-gui || test $? -eq 124
 
       - name: Smoke executable (Windows)
-        # wowfish-gui.exe is a windowed app: PowerShell only waits for it (and sets
+        # cedargrove-gui.exe is a windowed app: PowerShell only waits for it (and sets
         # $LASTEXITCODE) when its output is piped.
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          .\dist\wowfish.exe --version; if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          .\dist\wowfish.exe doctor;    if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          .\dist\wowfish.exe listen --list; if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          .\dist\wowfish-gui.exe --version | Out-Host; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\dist\cedargrove.exe --version; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\dist\cedargrove.exe doctor;    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\dist\cedargrove.exe listen --list; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\dist\cedargrove-gui.exe --version | Out-Host; if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Smoke GUI window (Windows)
         # Open the real window: unlike `--version` it runs logging setup with no console. A crash
@@ -76,16 +76,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Start-Process .\dist\wowfish-gui.exe
+          Start-Process .\dist\cedargrove-gui.exe
           $title = ''
-          for ($i = 0; $i -lt 30 -and $title -notlike 'wowfish *'; $i++) {
+          for ($i = 0; $i -lt 30 -and $title -notlike 'cedargrove *'; $i++) {
             Start-Sleep 1
-            $title = (Get-Process wowfish-gui -ErrorAction SilentlyContinue |
+            $title = (Get-Process cedargrove-gui -ErrorAction SilentlyContinue |
               Where-Object MainWindowTitle | Select-Object -First 1).MainWindowTitle
           }
-          Get-Process wowfish-gui -ErrorAction SilentlyContinue | Stop-Process -Force
-          if ($title -notlike 'wowfish *') {
-            Write-Error "wowfish-gui.exe never opened its window (last window title: '$title')"
+          Get-Process cedargrove-gui -ErrorAction SilentlyContinue | Stop-Process -Force
+          if ($title -notlike 'cedargrove *') {
+            Write-Error "cedargrove-gui.exe never opened its window (last window title: '$title')"
             exit 1
           }
 
@@ -93,6 +93,6 @@ jobs:
         if: matrix.python == '3.12'
         uses: actions/upload-artifact@v7
         with:
-          name: wowfish-${{ matrix.os }}
-          path: dist/wowfish*
+          name: cedargrove-${{ matrix.os }}
+          path: dist/cedargrove*
           if-no-files-found: error

@@ -1,8 +1,8 @@
-"""Entry point for the windowed `wowfish-gui` executable: `wowfish gui`, no console."""
+"""Entry point for the windowed `cedargrove-gui` executable: `cedargrove gui`, no console."""
 
 import sys
 
-from wowfish.cli import main
+from cedargrove.cli import main
 
 if __name__ == "__main__":
     if "--version" not in sys.argv[1:]:

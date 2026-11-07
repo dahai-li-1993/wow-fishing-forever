@@ -849,7 +849,7 @@ wheels = [
 ]
 
 [[package]]
-name = "wowfish"
+name = "cedargrove"
 source = { editable = "." }
 dependencies = [
     { name = "loguru" },

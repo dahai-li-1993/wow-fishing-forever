@@ -19,7 +19,7 @@ def is_prerelease(version: str) -> bool:
 
 
 def check_assets_present(root: Path) -> None:
-    assets = root / "src" / "wowfish" / "assets"
+    assets = root / "src" / "cedargrove" / "assets"
     expected = [assets / "interact_icon" / f"interact_gold_{n}.png" for n in (29, 42, 53, 79, 103)]
     clips = ("fishingbobber_1", "fishingbobber_2", "fishingbobber_3", "fishbite")
     expected += [assets / "clips" / f"{n}.wav" for n in clips]
@@ -32,7 +32,7 @@ def check_assets_present(root: Path) -> None:
 
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
-    version = installed_version("wowfish")
+    version = installed_version("cedargrove")
     check_assets_present(root)
     print(f"prerelease={'true' if is_prerelease(version) else 'false'}")
 

@@ -14,21 +14,21 @@ Install [uv](https://docs.astral.sh/uv/) and optionally [just](https://github.co
 | `just test` | `uv run pytest` |
 | `just lint` | `uv run ruff check . && uv run ruff format --check .` |
 | `just fmt` | `uv run ruff check --fix . && uv run ruff format .` |
-| `just build` | `uv run pyinstaller --clean --noconfirm packaging/wowfish.spec` |
+| `just build` | `uv run pyinstaller --clean --noconfirm packaging/cedargrove.spec` |
 | `just smoke` | run the built executable: `--version`, `doctor`, `listen --list`, `calibrate` on the fixture |
 
 Unit tests never touch the network, the display, or audio hardware: `soundcard`, `mss`, and
 `Xlib` are imported lazily and the tests stub them. The X11 capture tests run only when
-`DISPLAY` is set. Set `WOWFISH_HOME` to redirect config, cache, and logs; the test suite does
+`DISPLAY` is set. Set `CEDARGROVE_HOME` to redirect config, cache, and logs; the test suite does
 this automatically.
 
 ## Layout
 
-    src/wowfish/
+    src/cedargrove/
       cli.py        typer app; registers the commands below
       commands/     calibrate, watch, listen, verify-bite, run, gui (one module each)
       config.py     TOML config: [game], [vision], [audio], [run]; defaults, validation, save
-      paths.py      config / cache / log locations (WOWFISH_HOME override)
+      paths.py      config / cache / log locations (CEDARGROVE_HOME override)
       doctor.py     environment probes
       assets/       interact-icon sprites (PNG) and splash clips (WAV) shipped in the package
       vision/       templates, regions, masked matcher, acquire/track search, calibration, annotate
@@ -38,7 +38,7 @@ this automatically.
       engine/       the fishing loop: states, events, FishingEngine (injectable collaborators), thread
       gui/          Tk-free Presenter (engine thread + setup workers), ttkbootstrap window and pages
     scripts/        release preflight, clip conversion (ffmpeg, dev only)
-    packaging/      PyInstaller spec (console `wowfish` and windowed `wowfish-gui`)
+    packaging/      PyInstaller spec (console `cedargrove` and windowed `cedargrove-gui`)
     tests/          unit tests, synthetic frame/audio helpers, tests/fixtures/
 
 ## Branches and releases
@@ -48,7 +48,7 @@ this automatically.
 - Versions are PEP 440 (`1.0.0a1`, `1.0.0b1`, `1.0.0rc1`, `1.0.0`). Tags are `v` + version.
 - The version is not written anywhere in the repo. hatch-vcs derives it from the latest git
   tag when the package is installed: a tagged commit gets exactly that version, later commits
-  get a dev version such as `1.0.0b2.dev3+g1a2b3c4`. `wowfish --version` shows it.
+  get a dev version such as `1.0.0b2.dev3+g1a2b3c4`. `cedargrove --version` shows it.
 - To cut a release, tag the commit and push the tag:
   `git tag v<version> && git push origin v<version>`. The release workflow checks that the
   package assets are present, builds three executables, and publishes a GitHub Release

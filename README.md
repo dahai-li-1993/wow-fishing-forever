@@ -1,7 +1,7 @@
 <div align="center">
 
 <img src="/assets/cover-photo.jpg" alt="AI-generated photo of a bot fishing" width="360" />
-<h1>WoW Fishing Forever</h1>
+<h1>Cedargrove</h1>
 
 <p><strong>A fishing bot for WoW</strong></p>
 
@@ -25,7 +25,8 @@
 </p>
 </div>
 
-A fishing bot for **World of Warcraft: Forever**, successor to the 2019
+Cedargrove is a local rename of [WoW Fishing Forever](https://github.com/rsamf/wow-fishing-forever),
+a fishing bot for **World of Warcraft: Forever**, successor to the 2019
 [wow-fishing-bot](https://github.com/rsamf/wow-fishing-forever/tree/60d0710), now with many improvements, so you can now fish *forever*. It watches the
 game window for the built-in interact icon over your bobber, listens to the game's own splash
 sound for the bite, and presses your Interact key.
@@ -41,40 +42,33 @@ sound for the bite, and presses your Interact key.
 
 ## Install
 
-### Download an executable (easy, but not recommended)
+### Build executables
 
-> [!CAUTION]
-> Blizzard uses Warden, an anti-cheat program running alonside World of Warcraft. Warden is known
-> to scan for open window titles or process names. They can discover this project and ban "wowfish*".
-> Thus, it is recommended that you clone, rename the window title and process, and run the python, itself.
+Build the renamed app from this checkout:
 
-Grab the file for your OS from the
-[latest release](https://github.com/rsamf/wow-fishing-forever/releases/latest):
+    uv sync --group dev
+    uv run pyinstaller --clean --noconfirm packaging/cedargrove.spec
 
-| OS | file |
-|---|---|
-| Windows 10/11 (x86_64) | `wowfish-<version>-windows-x86_64.exe` |
-| macOS (Apple Silicon) | `wowfish-<version>-macos-arm64` |
-| Linux (x86_64) | `wowfish-<version>-linux-x86_64` |
+On Windows this creates `dist/cedargrove.exe` (terminal) and
+`dist/cedargrove-gui.exe` (GUI). On macOS and Linux the same names have no `.exe` suffix.
+These executables bundle Python and the app's dependencies.
 
-The executables are not code-signed, so the first launch needs one extra step:
-
-- **Windows:** SmartScreen shows "Windows protected your PC". Click *More info*, then
-  *Run anyway*.
-- **macOS:** Gatekeeper blocks it. Run `xattr -d com.apple.quarantine wowfish-*` in Terminal
-  once, and `chmod +x wowfish-*` if needed. Intel Macs: use the developer install below.
-- **Linux:** `chmod +x wowfish-*`.
-
-Verify downloads against `SHA256SUMS.txt` from the same release.
+The [upstream releases](https://github.com/rsamf/wow-fishing-forever/releases/latest)
+use the original name. Build this checkout to get the renamed executables.
 
 ### Run from source
 
-Clone and run in place:
+From this renamed checkout:
 
-    git clone https://github.com/rsamf/wow-fishing-forever
-    cd wow-fishing-forever
     uv sync --group dev
-    uv run wowfish doctor
+    uv run cedargrove doctor
+
+The GUI also runs directly from Python:
+
+    uv run python -m cedargrove gui
+
+Running from source and running a bundled executable use the same fishing logic.
+Renaming the app or running it from Python does not establish protection against bans.
 
 ### Additional step for Mac users
 
@@ -89,8 +83,8 @@ Mac users need to install a virtual loopback device such as [BlackHole](https://
 In the game:
 
 1. *Options > Gameplay > Controls*: enable **Auto Loot**.
-2. *Options > Keybindings > Targeting*: bind **Interact With Target**. wowfish assumes `f`.
-3. Put **Fishing** on an action bar key. wowfish assumes `1`.
+2. *Options > Keybindings > Targeting*: bind **Interact With Target**. cedargrove assumes `f`.
+3. Put **Fishing** on an action bar key. cedargrove assumes `1`.
 4. Type `/console SoftTargetIconGameObject 1` once. This shows the gold gear icon over your
    bobber whenever it is close enough to interact with.
 5. *Options > Sound*: set **Ambience** and **Music** to 0 and keep **Sound Effects** up.
@@ -102,13 +96,13 @@ In the game:
 
 Stand at the water and run the GUI:
 
-    wowfish gui          # or double-click wowfish-gui
+    cedargrove gui          # or double-click cedargrove-gui
 
 Or run it from terminal:
 
-    wowfish doctor                      # checks the compatibility with this machine
-    wowfish config                      # creates the config file; edit cast_key / interact_key
-    wowfish run                         # measures the icon on its first cast; Ctrl-C stops
+    cedargrove doctor                      # checks the compatibility with this machine
+    cedargrove config                      # creates the config file; edit cast_key / interact_key
+    cedargrove run                         # measures the icon on its first cast; Ctrl-C stops
 
 While the bot is running, keep the water in view and the game client in focus.
 
@@ -116,17 +110,17 @@ While the bot is running, keep the water in view and the game client in focus.
 
 | command | what it does |
 |---|---|
-| `wowfish gui` | The setup and fishing window |
-| `wowfish run [--minutes N] [--record-audio WAV]` | Fish from the terminal until Ctrl-C or the session limit; optionally save everything heard |
-| `wowfish doctor` | Check OS, display, OpenCV, audio devices, game window, input, calibration, config |
-| `wowfish calibrate SHOT.png [--save]` | Measure the interact icon's on-screen size from a screenshot |
-| `wowfish watch --live` | Show what the matcher sees: phase, score, position, milliseconds per frame |
-| `wowfish watch --from DIR` | Same, over saved frames; `--save-frames` writes annotated thumbnails |
-| `wowfish listen [--list] [--device D] [--record WAV]` | Meter the game's audio (or loopback device D), print bites as they are heard |
-| `wowfish verify-bite WAV [--save]` | Score a recording against every splash clip and pick the bite |
-| `wowfish config` | Create the config file if needed and print the resolved settings |
-| `wowfish config --path` | Print only the config file location |
-| `wowfish --version` | Print the version |
+| `cedargrove gui` | The setup and fishing window |
+| `cedargrove run [--minutes N] [--record-audio WAV]` | Fish from the terminal until Ctrl-C or the session limit; optionally save everything heard |
+| `cedargrove doctor` | Check OS, display, OpenCV, audio devices, game window, input, calibration, config |
+| `cedargrove calibrate SHOT.png [--save]` | Measure the interact icon's on-screen size from a screenshot |
+| `cedargrove watch --live` | Show what the matcher sees: phase, score, position, milliseconds per frame |
+| `cedargrove watch --from DIR` | Same, over saved frames; `--save-frames` writes annotated thumbnails |
+| `cedargrove listen [--list] [--device D] [--record WAV]` | Meter the game's audio (or loopback device D), print bites as they are heard |
+| `cedargrove verify-bite WAV [--save]` | Score a recording against every splash clip and pick the bite |
+| `cedargrove config` | Create the config file if needed and print the resolved settings |
+| `cedargrove config --path` | Print only the config file location |
+| `cedargrove --version` | Print the version |
 
 Add `--verbose` before any command for debug logging. `doctor` prints the log file path.
 

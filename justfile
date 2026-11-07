@@ -23,11 +23,11 @@ test:
 
 # Build the single-file executable into dist/
 build:
-    uv run pyinstaller --clean --noconfirm packaging/wowfish.spec
+    uv run pyinstaller --clean --noconfirm packaging/cedargrove.spec
 
 # Run the built executable the way CI does
 smoke:
-    ./dist/wowfish --version
-    ./dist/wowfish doctor
-    ./dist/wowfish listen --list
-    ./dist/wowfish calibrate tests/fixtures/wow_icon_crop.png
+    ./dist/cedargrove --version
+    ./dist/cedargrove doctor
+    ./dist/cedargrove listen --list
+    ./dist/cedargrove calibrate tests/fixtures/wow_icon_crop.png

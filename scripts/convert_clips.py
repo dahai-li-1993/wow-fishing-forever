@@ -25,7 +25,7 @@ def convert(src: Path, dst: Path) -> None:
 
 
 def main(src_dir: str) -> None:
-    out = Path(__file__).resolve().parents[1] / "src" / "wowfish" / "assets" / "clips"
+    out = Path(__file__).resolve().parents[1] / "src" / "cedargrove" / "assets" / "clips"
     out.mkdir(parents=True, exist_ok=True)
     for ogg, name in SOURCES.items():
         convert(Path(src_dir) / ogg, out / f"{name}.wav")

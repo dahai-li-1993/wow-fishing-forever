@@ -1,5 +1,5 @@
 [project]
-name = "wowfish"
+name = "cedargrove"
 dynamic = ["version"]
 description = "A vision-based fishing bot for World of Warcraft: Forever"
 readme = "README.md"
@@ -24,7 +24,7 @@ dependencies = [
 train = []
 
 [project.scripts]
-wowfish = "wowfish.cli:main"
+cedargrove = "cedargrove.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/rsamf/wow-fishing-forever"
@@ -49,7 +49,7 @@ source = "vcs"
 fallback-version = "0.0.0+unknown"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/wowfish"]
+packages = ["src/cedargrove"]
 
 [tool.uv]
 # Rebuild the editable install when HEAD or the tags move, so the version stays current.
