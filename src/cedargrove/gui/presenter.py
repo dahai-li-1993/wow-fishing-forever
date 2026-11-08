@@ -46,6 +46,8 @@ def describe(event: ev.Event) -> str:
             return f"Pressed {key} to interact"
         case ev.Caught():
             return "Caught something; the bobber is gone"
+        case ev.Timeout(what="icon", after_s=s, detail=detail) if detail:
+            return f"No gear icon within {s:g} s ({detail}); recasting"
         case ev.Timeout(what="icon", after_s=s):
             return f"No gear icon within {s:g} s; recasting"
         case ev.Timeout(what="bite", after_s=s, detail=detail) if detail:

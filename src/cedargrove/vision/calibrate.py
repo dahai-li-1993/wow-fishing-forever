@@ -20,6 +20,9 @@ MIN_VALID_SCORE = 0.75  # real gears score 0.8-0.95; skin and UI gold at the wro
 # A warm blob (skin, hair, a gold ring) scores about the same at every size (drop <= 0.10).
 OFF_SCALE = (0.8, 1.25)
 PROMINENCE_MIN = 0.15
+# Live finds score 0.83-0.93 and drop with lighting and water; above this the bot misses real
+# icons. Wrong things still score ~0.7 and the gold gate stays on.
+MAX_THRESHOLD = 0.78
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,7 @@ class Calibration:
         )
 
     def suggested_threshold(self) -> float:
-        return float(min(0.9, max(0.6, round(self.score - 0.10, 2))))
+        return float(min(MAX_THRESHOLD, max(0.6, round(self.score - 0.10, 2))))
 
 
 def _ranked(m: IconMatch) -> float:

@@ -148,3 +148,115 @@ def test_icon_matcher_finds_sprite_and_rejects_water():
 
             miss = IconMatcher(t).match(water)
             assert not miss.accepted(threshold), (frame_w, size, miss)
+
+
+def _fake_engine(tmp_path, monkeypatch, *, icon_from_s: float, sweep_s: float):
+    """Engine on a fake clock: the icon is on screen from `icon_from_s` after the cast but, as live
+    (the bobber bobs, the light changes), only one frame in six scores above the threshold. Every
+    sweep costs `sweep_s` of clock time and finds nothing."""
+    from cedargrove.capture import WindowRef
+    from cedargrove.engine import events as ev
+    from cedargrove.engine.engine import FishingEngine
+    from cedargrove.engine.state import State
+    from cedargrove.vision.calibrate import Calibration
+    from cedargrove.vision.matcher import IconMatch
+
+    monkeypatch.setenv("CEDARGROVE_HOME", str(tmp_path))
+    t = [0.0]
+    clock = lambda: t[0]  # noqa: E731
+
+    def sleep(s: float) -> None:
+        t[0] += s
+
+    class Matcher:
+        template = None
+        calls = 0
+
+        def match(self, frame, region=None, *, full_width=None):
+            t[0] += 0.05  # one fast-path frame
+            self.calls += 1
+            if frame[0, 0, 0] == 0:
+                return IconMatch(0.5, 100, 100, 42, 0.0)
+            return IconMatch(0.9 if self.calls % 6 == 0 else 0.7, 100, 100, 42, 0.3)
+
+    class Capturer:
+        cast_at = 0.0
+
+        def open(self, w): ...
+        def close(self): ...
+
+        def grab(self, box=None):
+            v = 1 if t[0] - self.cast_at >= icon_from_s else 0
+            return np.full((1440, 2560, 3) if box is None else (box[3], box[2], 3), v, np.uint8)
+
+    cap = Capturer()
+
+    class Input:
+        def is_game_focused(self, w):
+            return True
+
+        def press_key(self, key, hold):
+            cap.cast_at = t[0]
+
+    class Audio:
+        sample_rate = 16000
+
+        def read(self, n):
+            return np.zeros(n, np.float32)
+
+    def calibrate(frame, *, match_width=1920):
+        t[0] += sweep_s
+        return Calibration(42, 42, 0.5, 0, 0)
+
+    class Detector:
+        def feed(self, chunk):
+            return []
+
+        def reset(self): ...
+
+    matcher = Matcher()
+    engine = FishingEngine(
+        Config(game=GameConfig(), vision=VisionConfig(), audio=AudioConfig()),
+        WindowRef("World of Warcraft", 1, 0, 0, 2560, 1440, 1),
+        capturer=cap,
+        input_device=Input(),
+        audio_source=Audio(),
+        detector=Detector(),
+        matcher=matcher,
+        calibrate=calibrate,
+        clock=clock,
+        sleep=sleep,
+    )
+    return engine, ev, State, t
+
+
+def _events(engine):
+    out = []
+    while not engine.events.empty():
+        out.append(engine.events.get())
+    return out
+
+
+def test_slow_sweep_does_not_starve_the_fast_path(tmp_path, monkeypatch):
+    # The sweep (seconds at 1440p) used to run after every fast-path frame, so a cast got two or
+    # three looks at the bobber, the first while it was still in the air, and timed out.
+    engine, ev, State, _ = _fake_engine(tmp_path, monkeypatch, icon_from_s=1.5, sweep_s=8.0)
+    for _ in range(400):
+        engine.step()
+        if engine.state is State.WAIT_BITE:
+            break
+    events = _events(engine)
+    assert engine.state is State.WAIT_BITE, [type(e).__name__ for e in events]
+    assert not any(isinstance(e, ev.Timeout) for e in events)
+
+
+def test_icon_timeout_explains_itself_and_saves_the_frame(tmp_path, monkeypatch):
+    engine, ev, _, t = _fake_engine(tmp_path, monkeypatch, icon_from_s=1e9, sweep_s=8.0)
+    for _ in range(400):
+        engine.step()
+        if engine.stats.misses:
+            break
+    timeouts = [e for e in _events(engine) if isinstance(e, ev.Timeout)]
+    assert timeouts and "best 0.50" in timeouts[0].detail, timeouts
+    assert list((tmp_path / "cache" / "icon-misses").glob("miss-*.png"))
+    assert t[0] >= 4.0 + 8.0  # the sweep's own time did not eat the 4 s window

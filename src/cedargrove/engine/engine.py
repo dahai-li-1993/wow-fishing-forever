@@ -20,6 +20,7 @@ from cedargrove.capture import Box, WindowRef, find_window, get_capturer, linux_
 from cedargrove.config import Config
 from cedargrove.engine import events as ev
 from cedargrove.engine.state import State
+from cedargrove.vision.calibrate import MAX_THRESHOLD
 from cedargrove.vision.matcher import IconMatch
 from cedargrove.vision.region import Region
 from cedargrove.vision.search import IconSearch
@@ -33,6 +34,11 @@ LISTEN_EVERY_S = 2.0  # while waiting for the splash, say what is heard this oft
 SCORES_EVERY_S = 0.1  # ...and send each clip's peak score this often, for the GUI's graph
 SLEEP_SLICE_S = 0.1
 RESWEEP_AFTER_TIMEOUTS = 2  # icon timeouts in a row before the next cast measures the icon again
+# The bobber is still in the air for about a second after the cast, so a sweep on an earlier
+# frame can only fail. A sweep takes seconds at 1440p, so it runs at most once per cast and the
+# fast path keeps checking every frame around it.
+SWEEP_DELAY_S = 1.0
+MISS_FRAMES_KEPT = 5  # best frame of each icon timeout, saved for diagnosis
 
 
 class FishingEngine:
@@ -67,7 +73,8 @@ class FishingEngine:
         self._calibrate = calibrate or _real_calibrate
         self._on_calibrated = on_calibrated or (lambda cal: None)
         self._find_window = find_window
-        self.threshold = cfg.vision.icon_threshold
+        # Older calibrations saved best-score-minus-0.10, which can sit above real finds.
+        self.threshold = min(cfg.vision.icon_threshold, MAX_THRESHOLD)
         # The saved size (if any) is only a first guess: every run measures the icon on its
         # first cast, since resolution and UI scale change the icon's size on screen.
         self.matcher = matcher if matcher is not None else None
@@ -75,6 +82,9 @@ class FishingEngine:
             self.matcher = self._matcher_factory(cfg.vision.icon_size_px)
         self.search = IconSearch(self.matcher, self.threshold) if self.matcher else None
         self._sweeping = True
+        self._swept_this_cast = False
+        self._sweep_s = 0.0  # time spent sweeping this cast; it does not count against the timeout
+        self._best_icon: tuple[IconMatch, np.ndarray] | None = None  # best fast-path miss
         self._icon_timeouts = 0
         self._clock = clock
         self._sleep = sleep
@@ -186,6 +196,9 @@ class FishingEngine:
             self.stats.bites_heard, self._elapsed(),
         )  # fmt: skip
         self._t_cast = now
+        self._swept_this_cast = False
+        self._sweep_s = 0.0
+        self._best_icon = None
         if self.search is not None:
             self.search.reset()
         limit = self.cfg.run.icon_timeout_s
@@ -204,23 +217,45 @@ class FishingEngine:
                 self._sweeping = False
                 self._found(frame, m)
                 return
-        if self._sweeping or self.search is None:
+            if self._best_icon is None or m.score > self._best_icon[0].score:
+                self._best_icon = (m, frame)
+        want_sweep = self._sweeping or self.search is None
+        if want_sweep and not self._swept_this_cast and now - self._t_cast >= SWEEP_DELAY_S:
+            self._swept_this_cast = True
+            t0 = self._clock()
             cal = self._calibrate(frame, match_width=self.cfg.vision.match_width)
+            self._sweep_s += self._clock() - t0
             if cal.valid:
                 self._use_calibration(cal)
                 self._icon_timeouts = 0
                 self._found(frame, IconMatch(cal.score, cal.x, cal.y, cal.icon_size_px, cal.gold))
                 return
-        if now - self._t_cast > self.cfg.run.icon_timeout_s:
-            self._emit(ev.Timeout(self._t(), "icon", self.cfg.run.icon_timeout_s))
+            now = self._clock()
+        if now - self._t_cast - self._sweep_s > self.cfg.run.icon_timeout_s:
+            detail = self._icon_miss_detail()
+            self._emit(ev.Timeout(self._t(), "icon", self.cfg.run.icon_timeout_s, detail))
             self._icon_timeouts += 1
             if self._icon_timeouts >= RESWEEP_AFTER_TIMEOUTS:
                 self._sweeping = True
             self._miss("No gear icon over the bobber")
 
+    def _icon_miss_detail(self) -> str:
+        """Best near-miss of this cast, and where its frame was saved, so a miss explains itself."""
+        if self._best_icon is None:
+            return ""
+        m, frame = self._best_icon
+        if m.score <= -1.0:
+            return "icon too small to match at this resolution"
+        text = (
+            f"best {m.score:.2f} at ({m.x}, {m.y}), {m.size} px, gold {m.gold:.2f}; "
+            f"needs {self.threshold:.2f} and gold 0.12"
+        )
+        saved = _save_miss_frame(frame, m)
+        return f"{text}; frame saved to {saved}" if saved else text
+
     def _use_calibration(self, cal: Any) -> None:
         self.matcher = self._matcher_factory(cal.icon_size_px)
-        self.threshold = cal.suggested_threshold()
+        self.threshold = min(cal.suggested_threshold(), MAX_THRESHOLD)
         self.search = IconSearch(self.matcher, self.threshold)
         self._sweeping = False
         self._emit(ev.Calibrated(self._t(), int(cal.icon_size_px), float(cal.score)))
@@ -490,6 +525,25 @@ def build_engine(
         find_window=lambda t=title: find_window(t),
         session_s=session_s,
     )
+
+
+def _save_miss_frame(frame: np.ndarray, m: IconMatch) -> Path | None:
+    """Write the frame with the near-miss boxed to the cache; keep the newest few."""
+    try:
+        from cedargrove.paths import cache_dir
+
+        out = cache_dir() / "icon-misses"
+        out.mkdir(parents=True, exist_ok=True)
+        img = frame.copy()
+        half = max(4, m.size // 2) + 6
+        cv2.rectangle(img, (m.x - half, m.y - half), (m.x + half, m.y + half), (0, 140, 255), 2)
+        path = out / f"miss-{time.strftime('%Y%m%d-%H%M%S')}.png"
+        cv2.imwrite(str(path), img)
+        for old in sorted(out.glob("miss-*.png"))[:-MISS_FRAMES_KEPT]:
+            old.unlink(missing_ok=True)
+        return path
+    except Exception:  # diagnosis must never stop the bot
+        return None
 
 
 def _real_calibrate(frame: np.ndarray, *, match_width: int = 1920) -> Any:
