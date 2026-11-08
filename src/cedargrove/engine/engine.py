@@ -40,6 +40,12 @@ LOOP_SLEEP_S = 0.02  # between steps, so listening does not spin a core
 LAND_S = 1.5  # after the cast the bobber flies and lands; nothing heard before this is a bite
 LOOK_EVERY_S = 0.5  # full-frame looks for the icon, while it has not been seen this cast
 NO_SPLASH_WARN = 3  # casts in a row with no splash before saying what to check
+# Clicking into the game to resume: a key sent in the same instant can be lost, so wait a moment.
+RESUME_SETTLE_S = 1.0
+# Before a cast: if a bobber is still out (a channel that outlived cast_timeout_s, or one cast by
+# hand before Start), the cast key may only reel it in, which matters when it is also the
+# Interact key. Wait up to this long for it to go; then cast anyway.
+STALE_WAIT_S = 5.0
 
 
 class FishingEngine:
@@ -88,6 +94,9 @@ class FishingEngine:
         self._icon_visible = False  # seen on the latest look
         self._last_look = -math.inf
         self._no_splash = 0  # casts in a row that ended without a splash
+        self._hold_until = -math.inf  # no cast before this (just resumed)
+        self._stale_since: float | None = None  # when the pre-cast check began
+        self._stale_said = False
         self._last_audio: float | None = None
         self._audio_frames = 0
         self._last_stats = 0.0
@@ -142,6 +151,7 @@ class FishingEngine:
             return
         if self.state is State.PAUSED:
             self.state = self._resume_state
+            self._hold_until = now + RESUME_SETTLE_S
             self._emit(ev.Resumed(self._t(), self.state))
 
         chunks = self._drain_audio(now)  # drained every step, so a bite is never stale audio
@@ -153,7 +163,10 @@ class FishingEngine:
             self._send_scores(now, flush=bool(bites))  # flush so the graph gets the bite's peak
 
         if self.state is State.IDLE:
-            self._cast()
+            if self._ready_to_cast(now):
+                self._cast()
+            else:
+                self._sleep(LOOP_SLEEP_S)
             return
         self._look(now)
         if self.state is State.CASTING:
@@ -165,7 +178,39 @@ class FishingEngine:
         self._maybe_stats(now)
         self._sleep(LOOP_SLEEP_S)
 
+    def _ready_to_cast(self, now: float) -> bool:
+        if now < self._hold_until:
+            return False
+        if self.matcher is None:
+            return True
+        if self._stale_since is None:
+            self._stale_since = now
+        if now - self._stale_since >= STALE_WAIT_S:
+            return True  # it may be something else that looks like the icon; cast anyway
+        if now - self._last_look < LOOK_EVERY_S:
+            return False
+        self._last_look = now
+        if self._icon_xy is not None:  # the last cast's bobber: look only where it was
+            x, y = self._icon_xy
+            w, h = self.window.width, self.window.height
+            x0, y0, x1, y1 = Region.around(x, y, w, h, 0.05).to_box(w, h)
+            m = self.matcher.match(self.capturer.grab((x0, y0, x1 - x0, y1 - y0)), full_width=w)
+        else:
+            m = self.matcher.match(self.capturer.grab())
+        if not m.accepted(self.threshold):
+            return True
+        if not self._stale_said:
+            self._stale_said = True
+            self._change(
+                State.IDLE,
+                "A bobber is still in the water",
+                f"Waiting up to {STALE_WAIT_S:g} s for it to go before casting",
+            )
+        return False
+
     def _cast(self) -> None:
+        self._stale_since = None
+        self._stale_said = False
         if self._find_window is not None:
             found = self._find_window("World of Warcraft")
             if found is not None:

@@ -304,3 +304,24 @@ def test_pauses_while_the_game_is_not_focused():
     names = [type(e).__name__ for e in seen]
     assert "Paused" in names and "Resumed" in names
     assert names.index("Paused") < names.index("Resumed") < names.index("BiteHeard")
+
+
+def test_waits_a_moment_after_resuming_before_casting():
+    # Start with the terminal focused; the player clicks into the game at 2 s. A key sent in
+    # that instant can be lost, so the first cast waits a second.
+    world = _World(focused=lambda t: t >= 2.0)
+    engine = _engine(world, with_matcher=False)
+    _run_until(engine, lambda s: bool(world.presses))
+    assert world.presses[0][0] >= 3.0
+
+
+def test_waits_for_a_bobber_still_out_before_casting():
+    # A bobber cast by hand before Start is still out until 3 s. With cast = Interact (as in
+    # Dahai's setup) pressing now would only reel it in, so the bot waits for it to go.
+    world = _World(sounds_at=[6.0])
+    world.cast_at = 0.0
+    world.icon = lambda t, interacted: world.t < 3.0 or (t > 1.0 and not interacted)
+    engine = _engine(world)
+    seen = _run_until(engine, lambda s: bool(world.presses))
+    assert world.presses[0][0] >= 3.0
+    assert any(isinstance(e, ev.StateChanged) and "still in the water" in e.did for e in seen)
