@@ -18,7 +18,7 @@ from loguru import logger
 from cedargrove.assets import CLIP_NAMES, ICON_SIZES
 from cedargrove.audio import AudioChunk
 from cedargrove.audio.clips import build_fingerprints, load_reference_clips
-from cedargrove.audio.detector import BiteDetector, BiteEvent, detector_for
+from cedargrove.audio.detector import BiteDetector, BiteEvent, ClipScore, detector_for
 from cedargrove.audio.features import DEFAULT_MEL
 from cedargrove.cli import _setup_logging
 from cedargrove.config import (
@@ -318,6 +318,7 @@ def test_bobber_gone_without_a_splash_recasts_early():
     # about GONE_S later instead of waiting out the 30 s cast timeout.
     world = _World(sounds_at=[], icon=lambda t, interacted: 1.0 < t < 8.0)
     engine = _engine(world)
+    engine.detector.best_heard = ClipScore("fishbite", 0.6, 7.0)  # the bite it missed
     seen = _run_until(engine, lambda s: any(isinstance(e, ev.Timeout) for e in s))
     gone = next(e for e in seen if isinstance(e, ev.Timeout))
     assert gone.what == "gone"
@@ -372,3 +373,12 @@ def test_waits_for_a_bobber_still_out_before_casting():
     seen = _run_until(engine, lambda s: bool(world.presses))
     assert world.presses[0][0] >= 3.0
     assert any(isinstance(e, ev.StateChanged) and "still in the water" in e.did for e in seen)
+
+
+def test_icon_lost_in_silence_is_not_a_gone_bobber():
+    # Live, every "bobber gone" with nothing heard was the matcher losing the icon; it reeled in
+    # good casts. Without a splash-like sound, keep listening until cast_timeout_s.
+    world = _World(sounds_at=[], icon=lambda t, interacted: 1.0 < t < 8.0)
+    engine = _engine(world)
+    seen = _run_until(engine, lambda s: any(isinstance(e, ev.Timeout) for e in s))
+    assert next(e for e in seen if isinstance(e, ev.Timeout)).what == "bite"

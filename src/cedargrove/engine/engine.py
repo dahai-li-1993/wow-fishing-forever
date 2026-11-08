@@ -44,6 +44,9 @@ LOOK_EVERY_S = 0.3  # full-frame looks for the icon, while it has not been seen 
 ICON_GIVE_UP = 3  # icon timeouts in a row before fishing by sound until the icon is seen again
 KEEP_MARGIN = 0.08  # once seen, the icon stays "there" down to threshold - this (hysteresis)
 GONE_S = 3.0  # a tracked bobber unseen this long while listening is gone: recast
+# ...but only if something splash-like was heard: a fish that gets away splashes first. Without
+# it, a lost icon is the matcher's miss, not the bobber's (4 of 4 such recasts live were false).
+GONE_NEEDS_SOUND = 0.45
 NO_SPLASH_WARN = 3  # casts in a row with no splash before saying what to check
 # Clicking into the game to resume: a key sent in the same instant can be lost, so wait a moment.
 RESUME_SETTLE_S = 1.0
@@ -314,6 +317,7 @@ class FishingEngine:
             self.state is State.WAIT_BITE
             and self._unseen_since is not None
             and now - self._unseen_since >= GONE_S
+            and self._best_heard[1] >= GONE_NEEDS_SOUND
         ):
             self._emit(ev.Timeout(self._t(), "gone", GONE_S, self._heard()))
             self._no_splash_miss("The bobber is gone without a splash I could hear")
