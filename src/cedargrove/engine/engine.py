@@ -1,9 +1,11 @@
 """The fishing loop. One `step()` per iteration; every collaborator is injectable.
 
-Audio drives it: cast, let the bobber land, listen for the splash, press Interact, give Auto
-Loot a moment, cast again. Vision only helps (the bobber's thumbnail for the GUI, and seeing the
-bobber vanish after Interact so the next cast comes sooner). It never ends a cast: in the logs
-the gold-gear match threw away half the casts, while every splash heard became a catch.
+Cast, let the bobber land, listen for the splash, press Interact, give Auto Loot a moment, cast
+again. The splash decides when to press Interact. The gold gear icon (when calibrated) checks the
+cast: no icon within icon_timeout_s means the bobber landed out of range, so recast; a bobber
+that vanishes without a heard splash means the fish got away, so recast now rather than at
+cast_timeout_s. Because a bad match once threw away every cast, the icon check stands down after
+ICON_GIVE_UP misses in a row and the bot fishes by sound until it sees the icon again.
 """
 
 from __future__ import annotations
@@ -38,7 +40,10 @@ SCORES_EVERY_S = 0.1  # ...and send each clip's peak score this often, for the G
 SLEEP_SLICE_S = 0.1
 LOOP_SLEEP_S = 0.02  # between steps, so listening does not spin a core
 LAND_S = 1.5  # after the cast the bobber flies and lands; nothing heard before this is a bite
-LOOK_EVERY_S = 0.5  # full-frame looks for the icon, while it has not been seen this cast
+LOOK_EVERY_S = 0.3  # full-frame looks for the icon, while it has not been seen this cast
+ICON_GIVE_UP = 3  # icon timeouts in a row before fishing by sound until the icon is seen again
+KEEP_MARGIN = 0.08  # once seen, the icon stays "there" down to threshold - this (hysteresis)
+GONE_S = 3.0  # a tracked bobber unseen this long while listening is gone: recast
 NO_SPLASH_WARN = 3  # casts in a row with no splash before saying what to check
 # Clicking into the game to resume: a key sent in the same instant can be lost, so wait a moment.
 RESUME_SETTLE_S = 1.0
@@ -92,6 +97,9 @@ class FishingEngine:
         self._t_interact = 0.0
         self._icon_xy: tuple[int, int] | None = None  # where the icon was last seen this cast
         self._icon_visible = False  # seen on the latest look
+        self._unseen_since: float | None = None  # first look of the current run of misses
+        self._icon_gate = True  # recast when no icon shows up; off after ICON_GIVE_UP misses
+        self._icon_misses = 0  # icon timeouts in a row
         self._last_look = -math.inf
         self._no_splash = 0  # casts in a row that ended without a splash
         self._hold_until = -math.inf  # no cast before this (just resumed)
@@ -169,6 +177,8 @@ class FishingEngine:
                 self._sleep(LOOP_SLEEP_S)
             return
         self._look(now)
+        if self._icon_check(now):
+            return
         if self.state is State.CASTING:
             self._land(now)
         elif self.state is State.WAIT_BITE:
@@ -224,6 +234,7 @@ class FishingEngine:
         self._t_cast = self._clock()
         self._icon_xy = None
         self._icon_visible = False
+        self._unseen_since = None
         self._last_look = -math.inf
         self._change(State.CASTING, f"Pressed {key} to cast", "Waiting for the bobber to land")
 
@@ -265,21 +276,55 @@ class FishingEngine:
             )
             return
         if now - self._t_cast > self.cfg.run.cast_timeout_s:
-            clip, score = self._best_heard
-            detail = f"best match {score:.2f} ({clip})" if clip else "nothing matched"
-            self._emit(ev.Timeout(self._t(), "bite", self.cfg.run.cast_timeout_s, detail))
-            self._no_splash += 1
-            if self._no_splash == NO_SPLASH_WARN:
-                self._emit(ev.Warning(self._t(), self._no_splash_hint()))
-            self._miss("No splash heard")
+            self._emit(ev.Timeout(self._t(), "bite", self.cfg.run.cast_timeout_s, self._heard()))
+            self._no_splash_miss("No splash heard")
+
+    def _heard(self) -> str:
+        clip, score = self._best_heard
+        return f"best match {score:.2f} ({clip})" if clip else "nothing matched"
+
+    def _no_splash_miss(self, did: str) -> None:
+        self._no_splash += 1
+        if self._no_splash == NO_SPLASH_WARN:
+            self._emit(ev.Warning(self._t(), self._no_splash_hint()))
+        self._miss(did)
+
+    def _icon_check(self, now: float) -> bool:
+        """End the cast on what the icon shows; True when it did."""
+        if self.matcher is None or self.state not in (State.CASTING, State.WAIT_BITE):
+            return False
+        if self._icon_xy is None:
+            if not self._icon_gate or now - self._t_cast <= self.cfg.run.icon_timeout_s:
+                return False
+            self._emit(ev.Timeout(self._t(), "icon", self.cfg.run.icon_timeout_s))
+            self._icon_misses += 1
+            if self._icon_misses == ICON_GIVE_UP:
+                self._icon_gate = False
+                self._emit(
+                    ev.Warning(
+                        self._t(),
+                        f"No gear icon in {ICON_GIVE_UP} casts in a row, so I fish by sound "
+                        "alone until I see it again; recalibrate on the Setup tab if this "
+                        "keeps happening",
+                    )
+                )
+            self._miss("No gear icon over the bobber")
+            return True
+        if (
+            self.state is State.WAIT_BITE
+            and self._unseen_since is not None
+            and now - self._unseen_since >= GONE_S
+        ):
+            self._emit(ev.Timeout(self._t(), "gone", GONE_S, self._heard()))
+            self._no_splash_miss("The bobber is gone without a splash I could hear")
+            return True
+        return False
 
     def _no_splash_hint(self) -> str:
-        unseen = self.matcher is not None and self._icon_xy is None
-        where = "the gear icon was not seen either; " if unseen else ""
         return (
-            f"No splash in {self._no_splash} casts in a row: {where}check that the bobber lands "
-            "in open water close to you, that Sound Effects are on in the game, and the bite "
-            "threshold on the Setup tab"
+            f"No splash heard in {self._no_splash} casts in a row: check that Sound Effects are "
+            "on in the game, that nothing else covers the splash, and the bite threshold on the "
+            "Setup tab (a missed bite scores just under it)"
         )
 
     def _after_interact(self, now: float) -> None:
@@ -310,10 +355,11 @@ class FishingEngine:
     # -- vision (optional) -------------------------------------------------------------------
 
     def _look(self, now: float) -> None:
-        """Keep `_icon_visible` current. Never ends a cast: a missed look costs nothing.
+        """Keep `_icon_visible` and `_unseen_since` current; `_icon_check` acts on them.
 
         Until the icon is seen this cast: a full-frame match every LOOK_EVERY_S, up to
-        icon_timeout_s after the cast. Once seen: a small box around it every box_interval_s.
+        icon_timeout_s after the cast. Once seen: a small box around it every box_interval_s,
+        accepted down to KEEP_MARGIN below the threshold so a dip in score is not a loss.
         """
         if self.matcher is None:
             return
@@ -328,6 +374,8 @@ class FishingEngine:
             self._icon_visible = m.accepted(self.threshold)
             if self._icon_visible:
                 self._icon_xy = (m.x, m.y)
+                self._icon_misses = 0
+                self._icon_gate = True
                 thumb, box = _thumbnail(frame, m.x, m.y, m.size)
                 where = (m.x, m.y)
                 self._emit(ev.IconFound(self._t(), thumb, box, float(m.score), int(m.size), where))
@@ -340,9 +388,12 @@ class FishingEngine:
         x0, y0, x1, y1 = Region.around(x, y, w, h, 0.10).to_box(w, h)
         box: Box = (x0, y0, x1 - x0, y1 - y0)
         m = self.matcher.match(self.capturer.grab(box), full_width=w)
-        self._icon_visible = m.accepted(self.threshold)
+        self._icon_visible = m.accepted(self.threshold - KEEP_MARGIN)
         if self._icon_visible:
             self._icon_xy = (x0 + m.x, y0 + m.y)
+            self._unseen_since = None
+        elif self._unseen_since is None:
+            self._unseen_since = now
 
     # -- helpers -----------------------------------------------------------------------------
 

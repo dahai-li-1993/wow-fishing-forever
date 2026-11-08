@@ -46,6 +46,10 @@ def describe(event: ev.Event) -> str:
             return "Answered the splash; Auto Loot should have it"
         case ev.Warning(message=message):
             return f"Check: {message}"
+        case ev.Timeout(what="icon", after_s=s):
+            return f"No gear icon within {s:g} s; recasting"
+        case ev.Timeout(what="gone", detail=detail):
+            return f"The bobber vanished without a splash I could hear ({detail}); recasting"
         case ev.Timeout(what="bite", after_s=s, detail=detail) if detail:
             return f"No splash within {s:g} s; {detail}; recasting"
         case ev.Timeout(what="bite", after_s=s):
@@ -352,7 +356,7 @@ class Presenter:
             case ev.BiteHeard(clip=clip, score=score):
                 self.trace.bite = (event.t, clip, score)
                 self.trace.version += 1
-            case ev.Timeout(what="bite"):
+            case ev.Timeout(what="bite" | "gone"):
                 self.trace.timed_out = True
                 self.trace.version += 1
             case ev.Stats():

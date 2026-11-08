@@ -267,14 +267,61 @@ def test_fishes_by_sound_alone_and_ignores_the_landing_splash():
     assert not any(isinstance(e, ev.Timeout) for e in seen)
 
 
-def test_an_icon_never_matched_does_not_end_the_cast():
-    # This is what lost half the casts: the gear never matched, so the bot recast after 4 s
-    # even though the fish would bite at 12 s.
+def test_no_icon_recasts_then_falls_back_to_sound_after_three():
+    # No icon within icon_timeout_s: recast (bobber out of range). But a calibration that never
+    # matches once stalled every cast, so after 3 misses in a row the bot fishes by sound.
     world = _World(sounds_at=[12.0], icon=lambda t, interacted: False)
     engine = _engine(world)
     seen = _run_until(engine, lambda s: any(isinstance(e, ev.Caught) for e in s))
-    assert [p[1] for p in world.presses] == ["1", "f"]
+    assert [p[1] for p in world.presses] == ["1", "1", "1", "1", "f"]
+    icon_timeouts = [e for e in seen if isinstance(e, ev.Timeout) and e.what == "icon"]
+    assert len(icon_timeouts) == 3
+    warnings = [e for e in seen if isinstance(e, ev.Warning)]
+    assert len(warnings) == 1 and "by sound" in warnings[0].message
+
+
+def test_the_icon_coming_back_turns_the_check_back_on():
+    # Icon missing on the first 3 casts (fallback), then it shows up again: a later cast with
+    # no icon is recast after icon_timeout_s again.
+    world = _World(sounds_at=[6.0])
+
+    def icon(t, interacted):
+        n = len([p for p in world.presses if p[1] == "1"])
+        return n in (4, 5) and t > 1.0 and not interacted
+
+    world.icon = icon
+    engine = _engine(world)
+    seen = _run_until(
+        engine, lambda s: sum(isinstance(e, ev.Timeout) and e.what == "icon" for e in s) >= 4
+    )
+    assert sum(isinstance(e, ev.Caught) for e in seen) == 2  # casts 4 and 5
+
+
+def test_flickering_icon_is_not_a_lost_bobber():
+    # The old tracker gave up after 3 missed looks (0.75 s) and threw the cast away. Now the
+    # icon must be gone for GONE_S while listening; one look in three missing is not that.
+    world = _World(sounds_at=[15.0])
+    looks = [0]
+
+    def icon(t, interacted):
+        looks[0] += 1
+        return t > 1.0 and not interacted and looks[0] % 3 != 0
+
+    world.icon = icon
+    engine = _engine(world)
+    seen = _run_until(engine, lambda s: any(isinstance(e, ev.Caught) for e in s))
     assert not any(isinstance(e, ev.Timeout) for e in seen)
+
+
+def test_bobber_gone_without_a_splash_recasts_early():
+    # A bite the detector missed: the fish gets away and the bobber vanishes at 8 s. Recast
+    # about GONE_S later instead of waiting out the 30 s cast timeout.
+    world = _World(sounds_at=[], icon=lambda t, interacted: 1.0 < t < 8.0)
+    engine = _engine(world)
+    seen = _run_until(engine, lambda s: any(isinstance(e, ev.Timeout) for e in s))
+    gone = next(e for e in seen if isinstance(e, ev.Timeout))
+    assert gone.what == "gone"
+    assert 10.5 < world.t - world.presses[0][0] < 13.0
 
 
 def test_the_icon_vanishing_confirms_the_catch_early():
@@ -289,12 +336,12 @@ def test_the_icon_vanishing_confirms_the_catch_early():
 
 
 def test_no_splash_three_casts_in_a_row_says_what_to_check():
-    world = _World(sounds_at=[])
+    world = _World(sounds_at=[], icon=lambda t, interacted: t > 1.0)
     engine = _engine(world)
     seen = _run_until(engine, lambda s: sum(isinstance(e, ev.Timeout) for e in s) >= 4)
+    assert all(e.what == "bite" for e in seen if isinstance(e, ev.Timeout))
     warnings = [e for e in seen if isinstance(e, ev.Warning)]
     assert len(warnings) == 1 and "3 casts" in warnings[0].message
-    assert "gear icon was not seen" in warnings[0].message
 
 
 def test_pauses_while_the_game_is_not_focused():

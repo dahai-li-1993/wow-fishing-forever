@@ -28,8 +28,9 @@
 Cedargrove is a local rename of [WoW Fishing Forever](https://github.com/rsamf/wow-fishing-forever),
 a fishing bot for **World of Warcraft: Forever**, successor to the 2019
 [wow-fishing-bot](https://github.com/rsamf/wow-fishing-forever/tree/60d0710), now with many improvements, so you can now fish *forever*. It listens to
-the game's own splash sound for the bite and presses your Interact key. Watching the window for
-the built-in interact icon over your bobber is optional and never ends a cast.
+the game's own splash sound for the bite and presses your Interact key. It also watches the
+window for the built-in interact icon over your bobber to check each cast, and falls back to
+sound alone if the icon stops matching.
 
 > [!NOTE]
 > 🎉 **Announcement** This was my very first Python project but, surprisingly, my most popular repo on GitHub. 
@@ -130,7 +131,7 @@ This bot looks at pixels and listens to sound, and it presses the keys to cast a
 
 1. **Cast**: It casts using your specified cast key. Each key press is simulated with a `key_hold_ms` timer.
 2. **Detect bite**: 1.5 seconds after the cast (once the bobber has landed) the bot starts listening. WoW plays one of its splash clips when a fish bites. The bot fingerprints the first 0.8 seconds of each as a log-mel spectrogram with the gain removed. If there's a match, the bot will simulate the interact key, and auto-loot should pick up your fish. After all that, the bot recasts. If no splash comes within `cast_timeout_s` it recasts, and after 3 such casts in a row it says what to check.
-3. **Watch the bobber (optional)**: WoW draws a gold gear sprite over the bobber when it is in interact range. If the icon is calibrated, the bot looks for it with masked OpenCV template matching to show the bobber in the GUI and to see it vanish after Interact, so it can cast again sooner. Vision never ends a cast: sound decides. (Earlier versions recast whenever the icon was not matched, which threw away about half the casts in real sessions while every splash heard became a catch.)
+3. **Check the bobber (when the icon is calibrated)**: WoW draws a gold gear sprite over the bobber when it is in interact range. The bot looks for it with masked OpenCV template matching. No icon within `icon_timeout_s` means the bobber is out of range, so it recasts; a bobber that vanishes without a heard splash means the fish got away, so it recasts at once instead of waiting out `cast_timeout_s`; and the icon vanishing after Interact confirms the catch. Once found, the icon is tracked with some slack in the score so a flicker is not a loss. If the icon is missed 3 casts in a row the bot stops relying on it and fishes by sound until it sees the icon again, so a bad calibration can no longer stall every cast.
 
 ## License
 

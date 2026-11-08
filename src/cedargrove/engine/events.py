@@ -56,7 +56,7 @@ class Warning(Event):
 
 @dataclass(frozen=True)
 class Timeout(Event):
-    what: str  # "bite" | "loot"
+    what: str  # "icon" | "bite" | "gone" (bobber vanished, no splash heard) | "loot"
     after_s: float
     detail: str = ""  # for "bite": the best match heard while waiting, so a miss explains itself
 
