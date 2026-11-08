@@ -34,22 +34,18 @@ def describe(event: ev.Event) -> str:
             return f"{did}. {nxt}."
         case ev.IconFound(score=score, where=(x, y)):
             return f"Found the bobber at ({x}, {y}), score {score:.2f}"
-        case ev.Calibrated(size=size, score=score):
-            return f"Measured the gear icon at {size} px (score {score:.2f})"
-        case ev.IconLost():
-            return "Lost sight of the bobber"
         case ev.BiteHeard(clip=clip, score=score):
             return f"Heard the splash ({score:.2f}, {clip})"
         case ev.KeyPressed(key=key, why="cast"):
             return f"Pressed {key} to cast"
         case ev.KeyPressed(key=key):
             return f"Pressed {key} to interact"
-        case ev.Caught():
+        case ev.Caught(confirmed=True):
             return "Caught something; the bobber is gone"
-        case ev.Timeout(what="icon", after_s=s, detail=detail) if detail:
-            return f"No gear icon within {s:g} s ({detail}); recasting"
-        case ev.Timeout(what="icon", after_s=s):
-            return f"No gear icon within {s:g} s; recasting"
+        case ev.Caught():
+            return "Answered the splash; Auto Loot should have it"
+        case ev.Warning(message=message):
+            return f"Check: {message}"
         case ev.Timeout(what="bite", after_s=s, detail=detail) if detail:
             return f"No splash within {s:g} s; {detail}; recasting"
         case ev.Timeout(what="bite", after_s=s):
@@ -95,9 +91,9 @@ class WorkerFailed:
 
 @dataclass
 class ScoreTrace:
-    """One cast's per-clip scores for the Scores graph, from the bobber found to bite/timeout."""
+    """One cast's per-clip scores for the Scores graph, from listening start to bite/timeout."""
 
-    t0: float = 0.0  # engine time the bobber was found; the graph's x is t - t0
+    t0: float = 0.0  # engine time listening started; the graph's x is t - t0
     points: list[tuple[float, dict[str, float]]] = field(default_factory=list)  # (t, peaks)
     threshold: float | None = None  # what the running detector compares against
     bite: tuple[float, str, float] | None = None  # (t, clip, score) when the bot heard it
@@ -262,7 +258,6 @@ class Presenter:
     def prerequisites(self) -> list[str]:
         """What blocks Start, in plain words; empty when the bot can run."""
         from cedargrove.engine.engine import unsupported_platform
-        from cedargrove.vision.matcher import MIN_TEMPLATE_PX
 
         reasons: list[str] = []
         problem = unsupported_platform()
@@ -271,11 +266,6 @@ class Presenter:
         window = self._find_window("World of Warcraft")
         if window is None and not problem:
             reasons.append("World of Warcraft window not found; is the game running?")
-        size = self.cfg.vision.icon_size_px
-        if size > 0 and window is not None:
-            px = round(size * min(1.0, self.cfg.vision.match_width / window.width))
-            if px < MIN_TEMPLATE_PX:
-                reasons.append("the calibrated icon is too small for this window; recalibrate")
         if not self.audio_devices():
             reasons.append("no loopback audio device found")
         return reasons
@@ -350,13 +340,15 @@ class Presenter:
 
     def _apply(self, event: ev.Event) -> None:
         match event:
+            case ev.StateChanged(state=State.WAIT_BITE):  # listening starts: a fresh graph
+                self.state, self.did, self.next = event.state.name, event.did, event.next
+                self.trace = ScoreTrace(
+                    t0=event.t, threshold=self.trace.threshold, version=self.trace.version + 1
+                )
             case ev.StateChanged(state=state, did=did, next=nxt):
                 self.state, self.did, self.next = state.name, did, nxt
             case ev.IconFound(thumbnail=thumb, box=box):
                 self.thumbnail_png = image.bgr_to_png_bytes(image.with_box(thumb, box))
-                self.trace = ScoreTrace(
-                    t0=event.t, threshold=self.trace.threshold, version=self.trace.version + 1
-                )
             case ev.BiteHeard(clip=clip, score=score):
                 self.trace.bite = (event.t, clip, score)
                 self.trace.version += 1

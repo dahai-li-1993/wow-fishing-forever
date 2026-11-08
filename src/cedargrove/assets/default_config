@@ -9,10 +9,12 @@ interact_key = "f"
 session_minutes = 0
 
 [vision]
-# On-screen size of the interact icon in pixels. 0 = not calibrated; `cedargrove calibrate` sets it.
+# Optional. The bot fishes by sound; the icon only shows the bobber in the GUI and spots it
+# vanishing after Interact. On-screen size of the interact icon in pixels. 0 = not calibrated;
+# `cedargrove calibrate` (or the GUI Setup tab) sets it.
 icon_size_px = 0
 icon_native_size = 0
-# Minimum match score (0..1) to accept the icon.
+# Minimum match score (0..1) to accept the icon (values above 0.78 are treated as 0.78).
 icon_threshold = 0.75
 # Frames wider than this are downscaled before matching.
 match_width = 1920
@@ -29,11 +31,12 @@ bite_threshold = 0.66
 refractory_s = 3.0
 
 [run]
-# Recast if the gear icon is not seen this many seconds after casting.
+# Look for the gear icon for this many seconds after casting (it never causes a recast).
 icon_timeout_s = 4.0
 # Recast if no splash is heard this many seconds after casting.
 cast_timeout_s = 30.0
-# Count a miss if the bobber is still there this many seconds after pressing Interact.
+# After pressing Interact, wait this long for Auto Loot before casting again (less when the
+# gear icon is seen to vanish; a miss when it is still there at the end).
 loot_timeout_s = 3.0
 # Random pause between actions, in seconds.
 pause_min_s = 0.5

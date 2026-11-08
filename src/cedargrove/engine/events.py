@@ -31,17 +31,6 @@ class IconFound(Event):
 
 
 @dataclass(frozen=True)
-class Calibrated(Event):
-    size: int  # icon side in window pixels, measured on this frame
-    score: float
-
-
-@dataclass(frozen=True)
-class IconLost(Event):
-    pass
-
-
-@dataclass(frozen=True)
 class BiteHeard(Event):
     clip: str
     score: float
@@ -55,12 +44,19 @@ class KeyPressed(Event):
 
 @dataclass(frozen=True)
 class Caught(Event):
-    pass
+    confirmed: bool = True  # the gear icon was seen to vanish; False: no icon to watch
+
+
+@dataclass(frozen=True)
+class Warning(Event):
+    """Something the player should check, e.g. no splash for several casts in a row."""
+
+    message: str
 
 
 @dataclass(frozen=True)
 class Timeout(Event):
-    what: str  # "icon" | "bite" | "loot"
+    what: str  # "bite" | "loot"
     after_s: float
     detail: str = ""  # for "bite": the best match heard while waiting, so a miss explains itself
 

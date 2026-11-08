@@ -1,4 +1,10 @@
-"""The fishing loop. One `step()` per iteration; every collaborator is injectable."""
+"""The fishing loop. One `step()` per iteration; every collaborator is injectable.
+
+Audio drives it: cast, let the bobber land, listen for the splash, press Interact, give Auto
+Loot a moment, cast again. Vision only helps (the bobber's thumbnail for the GUI, and seeing the
+bobber vanish after Interact so the next cast comes sooner). It never ends a cast: in the logs
+the gold-gear match threw away half the casts, while every splash heard became a catch.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +13,6 @@ import queue
 import random
 import time
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +26,7 @@ from cedargrove.config import Config
 from cedargrove.engine import events as ev
 from cedargrove.engine.state import State
 from cedargrove.vision.calibrate import MAX_THRESHOLD
-from cedargrove.vision.matcher import IconMatch
 from cedargrove.vision.region import Region
-from cedargrove.vision.search import IconSearch
 
 UNFOCUSED = "World of Warcraft is not the focused window; click into the game"
 THUMB_WIDTH = 480
@@ -33,12 +36,10 @@ STATS_EVERY_S = 10.0
 LISTEN_EVERY_S = 2.0  # while waiting for the splash, say what is heard this often
 SCORES_EVERY_S = 0.1  # ...and send each clip's peak score this often, for the GUI's graph
 SLEEP_SLICE_S = 0.1
-RESWEEP_AFTER_TIMEOUTS = 2  # icon timeouts in a row before the next cast measures the icon again
-# The bobber is still in the air for about a second after the cast, so a sweep on an earlier
-# frame can only fail. A sweep takes seconds at 1440p, so it runs at most once per cast and the
-# fast path keeps checking every frame around it.
-SWEEP_DELAY_S = 1.0
-MISS_FRAMES_KEPT = 5  # best frame of each icon timeout, saved for diagnosis
+LOOP_SLEEP_S = 0.02  # between steps, so listening does not spin a core
+LAND_S = 1.5  # after the cast the bobber flies and lands; nothing heard before this is a bite
+LOOK_EVERY_S = 0.5  # full-frame looks for the icon, while it has not been seen this cast
+NO_SPLASH_WARN = 3  # casts in a row with no splash before saying what to check
 
 
 class FishingEngine:
@@ -52,16 +53,12 @@ class FishingEngine:
         audio_source: Any,
         detector: Any,
         matcher: Any = None,
-        matcher_factory: Callable[[int], Any] | None = None,
-        calibrate: Callable[..., Any] | None = None,
-        on_calibrated: Callable[[Any], None] | None = None,
         find_window: Callable[..., WindowRef | None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         rng: random.Random | None = None,
         session_s: float | None = None,
         box_interval_s: float = 0.25,
-        lost_after: int = 3,
     ) -> None:
         self.cfg = cfg
         self.window = window
@@ -69,29 +66,15 @@ class FishingEngine:
         self.input = input_device
         self.audio = audio_source
         self.detector = detector
-        self._matcher_factory = matcher_factory or (lambda size: matcher)
-        self._calibrate = calibrate or _real_calibrate
-        self._on_calibrated = on_calibrated or (lambda cal: None)
+        self.matcher = matcher  # None: no usable calibrated icon; the bot fishes by ear alone
         self._find_window = find_window
         # Older calibrations saved best-score-minus-0.10, which can sit above real finds.
         self.threshold = min(cfg.vision.icon_threshold, MAX_THRESHOLD)
-        # The saved size (if any) is only a first guess: every run measures the icon on its
-        # first cast, since resolution and UI scale change the icon's size on screen.
-        self.matcher = matcher if matcher is not None else None
-        if self.matcher is None and cfg.vision.icon_size_px > 0:
-            self.matcher = self._matcher_factory(cfg.vision.icon_size_px)
-        self.search = IconSearch(self.matcher, self.threshold) if self.matcher else None
-        self._sweeping = True
-        self._swept_this_cast = False
-        self._sweep_s = 0.0  # time spent sweeping this cast; it does not count against the timeout
-        self._best_icon: tuple[IconMatch, np.ndarray] | None = None  # best fast-path miss
-        self._icon_timeouts = 0
         self._clock = clock
         self._sleep = sleep
         self._rng = rng or random.Random()
         self.session_s = cfg.game.session_minutes * 60.0 if session_s is None else session_s
         self.box_interval_s = box_interval_s
-        self.lost_after = lost_after
 
         self.events: queue.Queue[ev.Event] = queue.Queue()
         self.state = State.IDLE
@@ -101,16 +84,16 @@ class FishingEngine:
         self._resume_state = State.IDLE
         self._t_cast = 0.0
         self._t_interact = 0.0
-        self._icon_xy: tuple[int, int] | None = None
-        self._icon_size = 0
-        self._misses = 0
-        self._last_box_grab = -math.inf
+        self._icon_xy: tuple[int, int] | None = None  # where the icon was last seen this cast
+        self._icon_visible = False  # seen on the latest look
+        self._last_look = -math.inf
+        self._no_splash = 0  # casts in a row that ended without a splash
         self._last_audio: float | None = None
         self._audio_frames = 0
         self._last_stats = 0.0
         self._last_listen = 0.0
         self._last_scores_sent = 0.0
-        self._best_heard: tuple[str, float] = ("", -1.0)  # best clip score since the icon was found
+        self._best_heard: tuple[str, float] = ("", -1.0)  # best clip score since listening began
 
     # -- public ------------------------------------------------------------------------------
 
@@ -161,7 +144,7 @@ class FishingEngine:
             self.state = self._resume_state
             self._emit(ev.Resumed(self._t(), self.state))
 
-        chunks = self._drain_audio(now)
+        chunks = self._drain_audio(now)  # drained every step, so a bite is never stale audio
         bites = []
         if self.state is State.WAIT_BITE:
             for chunk in chunks:
@@ -170,23 +153,21 @@ class FishingEngine:
             self._send_scores(now, flush=bool(bites))  # flush so the graph gets the bite's peak
 
         if self.state is State.IDLE:
-            self._cast(now)
-        elif self.state is State.CASTING:
-            self._acquire(now)
+            self._cast()
+            return
+        self._look(now)
+        if self.state is State.CASTING:
+            self._land(now)
         elif self.state is State.WAIT_BITE:
             self._wait_bite(now, bites)
         elif self.state is State.INTERACT:
             self._after_interact(now)
         self._maybe_stats(now)
+        self._sleep(LOOP_SLEEP_S)
 
-    def _cast(self, now: float) -> None:
+    def _cast(self) -> None:
         if self._find_window is not None:
             found = self._find_window("World of Warcraft")
-            if found is not None and (found.width, found.height) != (
-                self.window.width,
-                self.window.height,
-            ):
-                self._sweeping = True  # the window changed size: measure the icon again
             if found is not None:
                 self.window = found
         key = self.cfg.game.cast_key
@@ -195,91 +176,29 @@ class FishingEngine:
             self._t(), self.stats.casts + 1, self.stats.catches, self.stats.misses,
             self.stats.bites_heard, self._elapsed(),
         )  # fmt: skip
-        self._t_cast = now
-        self._swept_this_cast = False
-        self._sweep_s = 0.0
-        self._best_icon = None
-        if self.search is not None:
-            self.search.reset()
-        limit = self.cfg.run.icon_timeout_s
-        self._change(
-            State.CASTING,
-            f"Pressed {key} to cast",
-            f"Looking for the gear icon over the bobber for up to {limit:g} s",
-        )
+        self._t_cast = self._clock()
+        self._icon_xy = None
+        self._icon_visible = False
+        self._last_look = -math.inf
+        self._change(State.CASTING, f"Pressed {key} to cast", "Waiting for the bobber to land")
 
-    def _acquire(self, now: float) -> None:
-        frame = self.capturer.grab()
-        if self.search is not None:  # fast path: the saved or last measured size
-            _, m = self.search.step(frame)
-            if m.accepted(self.threshold):
-                self._icon_timeouts = 0
-                self._sweeping = False
-                self._found(frame, m)
-                return
-            if self._best_icon is None or m.score > self._best_icon[0].score:
-                self._best_icon = (m, frame)
-        want_sweep = self._sweeping or self.search is None
-        if want_sweep and not self._swept_this_cast and now - self._t_cast >= SWEEP_DELAY_S:
-            self._swept_this_cast = True
-            t0 = self._clock()
-            cal = self._calibrate(frame, match_width=self.cfg.vision.match_width)
-            self._sweep_s += self._clock() - t0
-            if cal.valid:
-                self._use_calibration(cal)
-                self._icon_timeouts = 0
-                self._found(frame, IconMatch(cal.score, cal.x, cal.y, cal.icon_size_px, cal.gold))
-                return
-            now = self._clock()
-        if now - self._t_cast - self._sweep_s > self.cfg.run.icon_timeout_s:
-            detail = self._icon_miss_detail()
-            self._emit(ev.Timeout(self._t(), "icon", self.cfg.run.icon_timeout_s, detail))
-            self._icon_timeouts += 1
-            if self._icon_timeouts >= RESWEEP_AFTER_TIMEOUTS:
-                self._sweeping = True
-            self._miss("No gear icon over the bobber")
-
-    def _icon_miss_detail(self) -> str:
-        """Best near-miss of this cast, and where its frame was saved, so a miss explains itself."""
-        if self._best_icon is None:
-            return ""
-        m, frame = self._best_icon
-        if m.score <= -1.0:
-            return "icon too small to match at this resolution"
-        text = (
-            f"best {m.score:.2f} at ({m.x}, {m.y}), {m.size} px, gold {m.gold:.2f}; "
-            f"needs {self.threshold:.2f} and gold 0.12"
-        )
-        saved = _save_miss_frame(frame, m)
-        return f"{text}; frame saved to {saved}" if saved else text
-
-    def _use_calibration(self, cal: Any) -> None:
-        self.matcher = self._matcher_factory(cal.icon_size_px)
-        self.threshold = min(cal.suggested_threshold(), MAX_THRESHOLD)
-        self.search = IconSearch(self.matcher, self.threshold)
-        self._sweeping = False
-        self._emit(ev.Calibrated(self._t(), int(cal.icon_size_px), float(cal.score)))
-        self._on_calibrated(cal)
-
-    def _found(self, frame: np.ndarray, m: Any) -> None:
-        self._icon_xy = (m.x, m.y)
-        self._icon_size = m.size
-        self._misses = 0
-        self._last_box_grab = self._clock()  # the full frame just confirmed it; look again later
-        thumb, box = _thumbnail(frame, m.x, m.y, m.size)
-        self._emit(ev.IconFound(self._t(), thumb, box, float(m.score), int(m.size), (m.x, m.y)))
-        self.detector.reset()
+    def _land(self, now: float) -> None:
+        if now - self._t_cast < LAND_S:
+            return
+        self.detector.reset()  # nothing heard in flight counts
         self._best_heard = ("", -1.0)
-        self._last_listen = self._last_scores_sent = self._clock()
+        self._last_listen = self._last_scores_sent = now
         self._change(
             State.WAIT_BITE,
-            f"Found the bobber at ({m.x}, {m.y})",
-            f"Waiting for a splash; will press {self.cfg.game.interact_key} when I hear one",
+            "The bobber is in the water",
+            f"Listening for a splash for up to {self.cfg.run.cast_timeout_s:g} s; "
+            f"will press {self.cfg.game.interact_key} when I hear one",
         )
 
     def _wait_bite(self, now: float, bites: list[Any]) -> None:
         if bites:
             bite = bites[0]
+            self._no_splash = 0
             self.stats = ev.Stats(
                 self._t(), self.stats.casts, self.stats.catches, self.stats.misses,
                 self.stats.bites_heard + 1, self._elapsed(),
@@ -292,61 +211,95 @@ class FishingEngine:
                 return
             key = self.cfg.game.interact_key
             self._press(key, "bite")
-            self._t_interact = now
-            self._last_box_grab = -math.inf
+            self._t_interact = self._clock()
+            self._last_look = -math.inf  # look again right away: is the bobber gone?
             self._change(
                 State.INTERACT,
                 f"Heard the splash ({bite.score:.2f}), pressed {key}",
-                "Waiting for the bobber to go away so Auto Loot can finish",
+                "Giving Auto Loot a moment",
             )
-            return
-        seen = self._track(now)
-        if seen is False and self._misses >= self.lost_after:
-            self._emit(ev.IconLost(self._t()))
-            self._miss("Lost sight of the bobber")
             return
         if now - self._t_cast > self.cfg.run.cast_timeout_s:
             clip, score = self._best_heard
             detail = f"best match {score:.2f} ({clip})" if clip else "nothing matched"
             self._emit(ev.Timeout(self._t(), "bite", self.cfg.run.cast_timeout_s, detail))
+            self._no_splash += 1
+            if self._no_splash == NO_SPLASH_WARN:
+                self._emit(ev.Warning(self._t(), self._no_splash_hint()))
             self._miss("No splash heard")
 
+    def _no_splash_hint(self) -> str:
+        unseen = self.matcher is not None and self._icon_xy is None
+        where = "the gear icon was not seen either; " if unseen else ""
+        return (
+            f"No splash in {self._no_splash} casts in a row: {where}check that the bobber lands "
+            "in open water close to you, that Sound Effects are on in the game, and the bite "
+            "threshold on the Setup tab"
+        )
+
     def _after_interact(self, now: float) -> None:
-        seen = self._track(now)
-        if seen is False:
-            self.stats = ev.Stats(
-                self._t(), self.stats.casts, self.stats.catches + 1, self.stats.misses,
-                self.stats.bites_heard, self._elapsed(),
-            )  # fmt: skip
-            self._emit(ev.Caught(self._t()))
-            self._pause_then_idle("Caught something; the bobber is gone")
+        if self._icon_xy is not None and not self._icon_visible:  # it was there; now it is gone
+            self._catch(confirmed=True)
             return
-        if now - self._t_interact > self.cfg.run.loot_timeout_s:
+        if now - self._t_interact < self.cfg.run.loot_timeout_s:
+            return
+        if self._icon_xy is not None:  # still visible after the whole wait
             self._emit(ev.Timeout(self._t(), "loot", self.cfg.run.loot_timeout_s))
             self._miss("The bobber did not go away after Interact")
+            return
+        self._catch(confirmed=False)  # no icon to watch: trust the splash, as it has earned
 
-    # -- helpers -----------------------------------------------------------------------------
+    def _catch(self, *, confirmed: bool) -> None:
+        self.stats = ev.Stats(
+            self._t(), self.stats.casts, self.stats.catches + 1, self.stats.misses,
+            self.stats.bites_heard, self._elapsed(),
+        )  # fmt: skip
+        self._emit(ev.Caught(self._t(), confirmed))
+        did = (
+            "Caught something; the bobber is gone"
+            if confirmed
+            else "Pressed Interact on the splash; Auto Loot should have it"
+        )
+        self._pause_then_idle(did)
 
-    def _track(self, now: float) -> bool | None:
-        """Grab the box around the icon (at most every box_interval_s) and look for it there.
+    # -- vision (optional) -------------------------------------------------------------------
 
-        True = seen, False = not seen (misses counted), None = not time to look yet.
+    def _look(self, now: float) -> None:
+        """Keep `_icon_visible` current. Never ends a cast: a missed look costs nothing.
+
+        Until the icon is seen this cast: a full-frame match every LOOK_EVERY_S, up to
+        icon_timeout_s after the cast. Once seen: a small box around it every box_interval_s.
         """
-        if now - self._last_box_grab < self.box_interval_s or self._icon_xy is None:
-            return None
-        self._last_box_grab = now
+        if self.matcher is None:
+            return
+        if self._icon_xy is None:
+            if self.state is State.INTERACT or now - self._t_cast > self.cfg.run.icon_timeout_s:
+                return
+            if now - self._last_look < LOOK_EVERY_S:
+                return
+            self._last_look = now
+            frame = self.capturer.grab()
+            m = self.matcher.match(frame)
+            self._icon_visible = m.accepted(self.threshold)
+            if self._icon_visible:
+                self._icon_xy = (m.x, m.y)
+                thumb, box = _thumbnail(frame, m.x, m.y, m.size)
+                where = (m.x, m.y)
+                self._emit(ev.IconFound(self._t(), thumb, box, float(m.score), int(m.size), where))
+            return
+        if now - self._last_look < self.box_interval_s:
+            return
+        self._last_look = now
         x, y = self._icon_xy
         w, h = self.window.width, self.window.height
         x0, y0, x1, y1 = Region.around(x, y, w, h, 0.10).to_box(w, h)
         box: Box = (x0, y0, x1 - x0, y1 - y0)
-        crop = self.capturer.grab(box)
-        m = self.matcher.match(crop, full_width=w)
-        if m.accepted(self.threshold):
+        m = self.matcher.match(self.capturer.grab(box), full_width=w)
+        self._icon_visible = m.accepted(self.threshold)
+        if self._icon_visible:
             self._icon_xy = (x0 + m.x, y0 + m.y)
-            self._misses = 0
-            return True
-        self._misses += 1
-        return False
+
+    # -- helpers -----------------------------------------------------------------------------
 
     def _press(self, key: str, why: str) -> None:
         self.input.press_key(key, self.cfg.run.key_hold_ms / 1000.0)
@@ -362,7 +315,6 @@ class FishingEngine:
     def _pause_then_idle(self, did: str) -> None:
         pause = self._rng.uniform(self.cfg.run.pause_min_s, self.cfg.run.pause_max_s)
         self._change(State.IDLE, did, f"Casting again in {pause:.1f} s")
-        self._icon_xy = None
         remaining = pause
         while remaining > 0 and not self._stop:
             step = min(SLEEP_SLICE_S, remaining)
@@ -487,27 +439,14 @@ def build_engine(
     window = find_window(title)
     if window is None:
         raise RuntimeError(f"no window titled {title!r}; is the game running?")
-    templates = load_icon_templates()
-
-    def matcher_factory(size: int) -> IconMatcher:
-        return IconMatcher(template_for_size(templates, size), cfg.vision.match_width)
-
+    matcher = None  # no calibrated icon, or too small to match here: fish by ear alone
     size = cfg.vision.icon_size_px
-    if size > 0 and matcher_factory(size).template_px(window.width) < MIN_TEMPLATE_PX:
-        size = 0  # the saved size is useless for this window; the first cast measures it
-    cfg = replace(cfg, vision=replace(cfg.vision, icon_size_px=size))
-
-    def on_calibrated(cal: Any) -> None:
-        from cedargrove.config import load_config, save_config
-
-        current, _ = load_config()
-        vision = replace(
-            current.vision,
-            icon_size_px=cal.icon_size_px,
-            icon_native_size=cal.native_size,
-            icon_threshold=cal.suggested_threshold(),
+    if size > 0:
+        candidate = IconMatcher(
+            template_for_size(load_icon_templates(), size), cfg.vision.match_width
         )
-        save_config(replace(current, vision=vision))
+        if candidate.template_px(window.width) >= MIN_TEMPLATE_PX:
+            matcher = candidate
 
     detector = detector_for(cfg.audio)
     audio: Any = ThreadedSource(open_capture(cfg.audio.selector, pid=window.pid, title=title))
@@ -520,34 +459,7 @@ def build_engine(
         input_device=get_input_device(),
         audio_source=audio,
         detector=detector,
-        matcher_factory=matcher_factory,
-        on_calibrated=on_calibrated,
+        matcher=matcher,
         find_window=lambda t=title: find_window(t),
         session_s=session_s,
     )
-
-
-def _save_miss_frame(frame: np.ndarray, m: IconMatch) -> Path | None:
-    """Write the frame with the near-miss boxed to the cache; keep the newest few."""
-    try:
-        from cedargrove.paths import cache_dir
-
-        out = cache_dir() / "icon-misses"
-        out.mkdir(parents=True, exist_ok=True)
-        img = frame.copy()
-        half = max(4, m.size // 2) + 6
-        cv2.rectangle(img, (m.x - half, m.y - half), (m.x + half, m.y + half), (0, 140, 255), 2)
-        path = out / f"miss-{time.strftime('%Y%m%d-%H%M%S')}.png"
-        cv2.imwrite(str(path), img)
-        for old in sorted(out.glob("miss-*.png"))[:-MISS_FRAMES_KEPT]:
-            old.unlink(missing_ok=True)
-        return path
-    except Exception:  # diagnosis must never stop the bot
-        return None
-
-
-def _real_calibrate(frame: np.ndarray, *, match_width: int = 1920) -> Any:
-    from cedargrove.vision.calibrate import calibrate_icon_scale
-    from cedargrove.vision.template import load_icon_templates
-
-    return calibrate_icon_scale(frame, load_icon_templates(), match_width=match_width)

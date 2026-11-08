@@ -150,7 +150,9 @@ def probe_calibration() -> ProbeResult:
         return ProbeResult("calibration", "fail", str(e))
     size = cfg.vision.icon_size_px
     if size <= 0:
-        return ProbeResult("calibration", "warn", f"icon not calibrated; {hint}")
+        return ProbeResult(
+            "calibration", "ok", f"icon not calibrated (optional: the bot fishes by sound); {hint}"
+        )
     w = find_window("World of Warcraft")
     if w is None:
         return ProbeResult("calibration", "warn", f"{size} px (no game window to check it against)")
@@ -158,9 +160,9 @@ def probe_calibration() -> ProbeResult:
     if px < MIN_TEMPLATE_PX:
         return ProbeResult(
             "calibration",
-            "fail",
+            "warn",
             f"{size} px is {px} px after downscaling this {w.width}-wide window "
-            f"(minimum {MIN_TEMPLATE_PX}); {hint}",
+            f"(minimum {MIN_TEMPLATE_PX}), so it is ignored and the bot fishes by sound; {hint}",
         )
     return ProbeResult("calibration", "ok", f"{size} px ({px} px in the matcher)")
 

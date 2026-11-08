@@ -45,7 +45,12 @@ class FishPage:
 
         mid = tb.Frame(f)
         mid.pack(fill="both", expand=True)
-        self.image = tb.Label(mid, text="no icon seen yet", anchor="center", width=60)
+        self.image = tb.Label(
+            mid,
+            text="no bobber icon seen yet (optional: the bot fishes by sound)",
+            anchor="center",
+            width=60,
+        )
         self.image.pack(side="left", anchor="n")
         self._photo = None
         right = tb.Frame(mid)

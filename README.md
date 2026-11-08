@@ -27,9 +27,9 @@
 
 Cedargrove is a local rename of [WoW Fishing Forever](https://github.com/rsamf/wow-fishing-forever),
 a fishing bot for **World of Warcraft: Forever**, successor to the 2019
-[wow-fishing-bot](https://github.com/rsamf/wow-fishing-forever/tree/60d0710), now with many improvements, so you can now fish *forever*. It watches the
-game window for the built-in interact icon over your bobber, listens to the game's own splash
-sound for the bite, and presses your Interact key.
+[wow-fishing-bot](https://github.com/rsamf/wow-fishing-forever/tree/60d0710), now with many improvements, so you can now fish *forever*. It listens to
+the game's own splash sound for the bite and presses your Interact key. Watching the window for
+the built-in interact icon over your bobber is optional and never ends a cast.
 
 > [!NOTE]
 > 🎉 **Announcement** This was my very first Python project but, surprisingly, my most popular repo on GitHub. 
@@ -102,7 +102,7 @@ Or run it from terminal:
 
     cedargrove doctor                      # checks the compatibility with this machine
     cedargrove config                      # creates the config file; edit cast_key / interact_key
-    cedargrove run                         # measures the icon on its first cast; Ctrl-C stops
+    cedargrove run                         # fishes by sound; Ctrl-C stops
 
 While the bot is running, keep the water in view and the game client in focus.
 
@@ -129,9 +129,8 @@ Add `--verbose` before any command for debug logging. `doctor` prints the log fi
 This bot looks at pixels and listens to sound, and it presses the keys to cast and loot. It does not read memory, inject code, inject network traffic, or rely on an addon.
 
 1. **Cast**: It casts using your specified cast key. Each key press is simulated with a `key_hold_ms` timer.
-2. **Detect bobber**: WoW draws a gold gear sprite over the bobber when it is in interact
-range. If you do not see the gold gear sprite above the bobber, that means the bobber is out of range for the interact key to work, so the bot will recast. The bot will scan for the sprite using template matching from OpenCV, and it matches it against the game window with a masked, mean-subtracted template match. If it doesn't find it, it will recast until it does. 
-3. **Detect bite**: WoW plays one of its splash clips when a fish bites. The bot fingerprints the first 0.8 seconds of each as a log-mel spectrogram with the gain removed. If there's a match, the bot will simulate the interact key, and auto-loot should pick up your fish. After all that, the bot recasts.
+2. **Detect bite**: 1.5 seconds after the cast (once the bobber has landed) the bot starts listening. WoW plays one of its splash clips when a fish bites. The bot fingerprints the first 0.8 seconds of each as a log-mel spectrogram with the gain removed. If there's a match, the bot will simulate the interact key, and auto-loot should pick up your fish. After all that, the bot recasts. If no splash comes within `cast_timeout_s` it recasts, and after 3 such casts in a row it says what to check.
+3. **Watch the bobber (optional)**: WoW draws a gold gear sprite over the bobber when it is in interact range. If the icon is calibrated, the bot looks for it with masked OpenCV template matching to show the bobber in the GUI and to see it vanish after Interact, so it can cast again sooner. Vision never ends a cast: sound decides. (Earlier versions recast whenever the icon was not matched, which threw away about half the casts in real sessions while every splash heard became a catch.)
 
 ## License
 

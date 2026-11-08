@@ -30,6 +30,7 @@ from cedargrove.config import (
     load_config,
     save_config,
 )
+from cedargrove.engine import events as ev
 from cedargrove.vision.matcher import IconMatcher
 from cedargrove.vision.template import load_icon_templates, template_for_size
 
@@ -150,53 +151,58 @@ def test_icon_matcher_finds_sprite_and_rejects_water():
             assert not miss.accepted(threshold), (frame_w, size, miss)
 
 
-def _fake_engine(tmp_path, monkeypatch, *, icon_from_s: float, sweep_s: float):
-    """Engine on a fake clock: the icon is on screen from `icon_from_s` after the cast but, as live
-    (the bobber bobs, the light changes), only one frame in six scores above the threshold. Every
-    sweep costs `sweep_s` of clock time and finds nothing."""
+class _World:
+    """A fake game on a fake clock. Times are seconds after the latest cast. The splash clips
+    play at `sounds_at` (the bot must ignore one while the bobber is still landing); the gear
+    icon is on screen while `icon(t_since_cast, interacted)` says so."""
+
+    def __init__(self, *, sounds_at=(), icon=None, focused=None):
+        self.t = 0.0
+        self.cast_at = -1e9
+        self.interacted = False
+        self.sounds_at = list(sounds_at)
+        self.icon = icon or (lambda t, interacted: False)
+        self.focused = focused or (lambda t: True)
+        self.presses: list[tuple[float, str]] = []
+
+    def since_cast(self) -> float:
+        return self.t - self.cast_at
+
+
+def _engine(world: _World, *, with_matcher: bool = True):
     from cedargrove.capture import WindowRef
-    from cedargrove.engine import events as ev
     from cedargrove.engine.engine import FishingEngine
-    from cedargrove.engine.state import State
-    from cedargrove.vision.calibrate import Calibration
     from cedargrove.vision.matcher import IconMatch
 
-    monkeypatch.setenv("CEDARGROVE_HOME", str(tmp_path))
-    t = [0.0]
-    clock = lambda: t[0]  # noqa: E731
-
     def sleep(s: float) -> None:
-        t[0] += s
-
-    class Matcher:
-        template = None
-        calls = 0
-
-        def match(self, frame, region=None, *, full_width=None):
-            t[0] += 0.05  # one fast-path frame
-            self.calls += 1
-            if frame[0, 0, 0] == 0:
-                return IconMatch(0.5, 100, 100, 42, 0.0)
-            return IconMatch(0.9 if self.calls % 6 == 0 else 0.7, 100, 100, 42, 0.3)
+        world.t += s
 
     class Capturer:
-        cast_at = 0.0
-
         def open(self, w): ...
         def close(self): ...
 
         def grab(self, box=None):
-            v = 1 if t[0] - self.cast_at >= icon_from_s else 0
-            return np.full((1440, 2560, 3) if box is None else (box[3], box[2], 3), v, np.uint8)
+            on = world.icon(world.since_cast(), world.interacted)
+            shape = (1440, 2560, 3) if box is None else (box[3], box[2], 3)
+            return np.full(shape, 1 if on else 0, np.uint8)
 
-    cap = Capturer()
+    class Matcher:
+        def match(self, frame, region=None, *, full_width=None):
+            world.t += 0.03  # a look takes time
+            if frame[0, 0, 0]:
+                return IconMatch(0.9, 50, 50, 42, 0.3)
+            return IconMatch(0.6, 50, 50, 42, 0.0)
 
     class Input:
         def is_game_focused(self, w):
-            return True
+            return world.focused(world.t)
 
         def press_key(self, key, hold):
-            cap.cast_at = t[0]
+            world.presses.append((world.t, key))
+            if key == "1":
+                world.cast_at, world.interacted = world.t, False
+            else:
+                world.interacted = True
 
     class Audio:
         sample_rate = 16000
@@ -204,59 +210,97 @@ def _fake_engine(tmp_path, monkeypatch, *, icon_from_s: float, sweep_s: float):
         def read(self, n):
             return np.zeros(n, np.float32)
 
-    def calibrate(frame, *, match_width=1920):
-        t[0] += sweep_s
-        return Calibration(42, 42, 0.5, 0, 0)
-
     class Detector:
+        """Hears a clip if it was fed audio covering a moment in `sounds_at`."""
+
+        def __init__(self):
+            self.heard_to = -1e9
+
+        def reset(self):
+            self.heard_to = world.since_cast()
+
         def feed(self, chunk):
-            return []
+            now = world.since_cast()
+            hits = [s for s in world.sounds_at if self.heard_to < s <= now]
+            self.heard_to = now
+            return [BiteEvent("fishingbobber_1", 0.9, s) for s in hits]
 
-        def reset(self): ...
-
-    matcher = Matcher()
-    engine = FishingEngine(
-        Config(game=GameConfig(), vision=VisionConfig(), audio=AudioConfig()),
+    cfg = Config(
+        game=GameConfig(cast_key="1", interact_key="f"), vision=VisionConfig(), audio=AudioConfig()
+    )
+    return FishingEngine(
+        cfg,
         WindowRef("World of Warcraft", 1, 0, 0, 2560, 1440, 1),
-        capturer=cap,
+        capturer=Capturer(),
         input_device=Input(),
         audio_source=Audio(),
         detector=Detector(),
-        matcher=matcher,
-        calibrate=calibrate,
-        clock=clock,
+        matcher=Matcher() if with_matcher else None,
+        clock=lambda: world.t,
         sleep=sleep,
     )
-    return engine, ev, State, t
 
 
-def _events(engine):
-    out = []
-    while not engine.events.empty():
-        out.append(engine.events.get())
-    return out
-
-
-def test_slow_sweep_does_not_starve_the_fast_path(tmp_path, monkeypatch):
-    # The sweep (seconds at 1440p) used to run after every fast-path frame, so a cast got two or
-    # three looks at the bobber, the first while it was still in the air, and timed out.
-    engine, ev, State, _ = _fake_engine(tmp_path, monkeypatch, icon_from_s=1.5, sweep_s=8.0)
-    for _ in range(400):
+def _run_until(engine, done, limit=20000) -> list:
+    seen: list = []
+    for _ in range(limit):
         engine.step()
-        if engine.state is State.WAIT_BITE:
-            break
-    events = _events(engine)
-    assert engine.state is State.WAIT_BITE, [type(e).__name__ for e in events]
-    assert not any(isinstance(e, ev.Timeout) for e in events)
+        while not engine.events.empty():
+            seen.append(engine.events.get())
+        if done(seen):
+            return seen
+    raise AssertionError([type(e).__name__ for e in seen][-30:])
 
 
-def test_icon_timeout_explains_itself_and_saves_the_frame(tmp_path, monkeypatch):
-    engine, ev, _, t = _fake_engine(tmp_path, monkeypatch, icon_from_s=1e9, sweep_s=8.0)
-    for _ in range(400):
-        engine.step()
-        if engine.stats.misses:
-            break
-    timeouts = [e for e in _events(engine) if isinstance(e, ev.Timeout)]
-    assert timeouts and "best 0.50" in timeouts[0].detail, timeouts
-    assert list((tmp_path / "cache" / "icon-misses").glob("miss-*.png"))
-    assert t[0] >= 4.0 + 8.0  # the sweep's own time did not eat the 4 s window
+def test_fishes_by_sound_alone_and_ignores_the_landing_splash():
+    # No calibrated icon at all. The bobber's landing at 0.5 s sounds like a splash; the bite is
+    # at 6 s. Exactly one Interact, after the bite, then the next cast.
+    world = _World(sounds_at=[0.5, 6.0])
+    engine = _engine(world, with_matcher=False)
+    seen = _run_until(engine, lambda s: sum(isinstance(e, ev.Caught) for e in s) >= 1)
+    bites = [e for e in seen if isinstance(e, ev.BiteHeard)]
+    interacts = [p for p in world.presses if p[1] == "f"]
+    assert len(bites) == 1 and len(interacts) == 1
+    assert interacts[0][0] - world.presses[0][0] >= 6.0
+    caught = next(e for e in seen if isinstance(e, ev.Caught))
+    assert caught.confirmed is False
+    assert not any(isinstance(e, ev.Timeout) for e in seen)
+
+
+def test_an_icon_never_matched_does_not_end_the_cast():
+    # This is what lost half the casts: the gear never matched, so the bot recast after 4 s
+    # even though the fish would bite at 12 s.
+    world = _World(sounds_at=[12.0], icon=lambda t, interacted: False)
+    engine = _engine(world)
+    seen = _run_until(engine, lambda s: any(isinstance(e, ev.Caught) for e in s))
+    assert [p[1] for p in world.presses] == ["1", "f"]
+    assert not any(isinstance(e, ev.Timeout) for e in seen)
+
+
+def test_the_icon_vanishing_confirms_the_catch_early():
+    world = _World(sounds_at=[5.0], icon=lambda t, interacted: t > 1.0 and not interacted)
+    engine = _engine(world)
+    seen = _run_until(engine, lambda s: any(isinstance(e, ev.Caught) for e in s))
+    assert any(isinstance(e, ev.IconFound) for e in seen)
+    caught = next(e for e in seen if isinstance(e, ev.Caught))
+    bite = next(e for e in seen if isinstance(e, ev.BiteHeard))
+    assert caught.confirmed is True
+    assert caught.t - bite.t < engine.cfg.run.loot_timeout_s
+
+
+def test_no_splash_three_casts_in_a_row_says_what_to_check():
+    world = _World(sounds_at=[])
+    engine = _engine(world)
+    seen = _run_until(engine, lambda s: sum(isinstance(e, ev.Timeout) for e in s) >= 4)
+    warnings = [e for e in seen if isinstance(e, ev.Warning)]
+    assert len(warnings) == 1 and "3 casts" in warnings[0].message
+    assert "gear icon was not seen" in warnings[0].message
+
+
+def test_pauses_while_the_game_is_not_focused():
+    world = _World(sounds_at=[6.0], focused=lambda t: not (2.0 < t < 4.0))
+    engine = _engine(world, with_matcher=False)
+    seen = _run_until(engine, lambda s: any(isinstance(e, ev.Caught) for e in s))
+    names = [type(e).__name__ for e in seen]
+    assert "Paused" in names and "Resumed" in names
+    assert names.index("Paused") < names.index("Resumed") < names.index("BiteHeard")

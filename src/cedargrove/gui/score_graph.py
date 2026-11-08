@@ -38,7 +38,7 @@ class ScoreGraph:
         self.canvas.bind("<Leave>", lambda _e: self.canvas.delete("hover"))
 
     def show(self, trace: ScoreTrace, span_s: float) -> None:
-        """Draw `trace` over 0..span_s seconds since the bobber was found; no-op if unchanged."""
+        """Draw `trace` over 0..span_s seconds since listening started; no-op if unchanged."""
         key = (id(trace), trace.version, span_s)
         if key != self._key:
             self._trace, self._span, self._key = trace, max(span_s, 1.0), key
